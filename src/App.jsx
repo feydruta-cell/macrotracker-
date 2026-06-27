@@ -27,7 +27,7 @@ const DEFAULT_FOODS = [
 const todayStr = () => new Date().toISOString().split("T")[0];
 const uid = () => Math.random().toString(36).slice(2, 9);
 
-// ── STORAGE (localStorage for Vercel) ─────────────────────────────────────
+// ── STORAGE (localStorage) ─────────────────────────────────────────────────
 function storageGet(key) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
   catch { return null; }
@@ -142,22 +142,22 @@ function FoodSearch({ onSelect }) {
     setSearching(true);
     setSearched(false);
     try {
-      const prompt = `Search for the nutritional values of "${q}" food. Use web search, prefer kaloriabazis.hu or similar Hungarian nutrition databases.
-Return ONLY a valid JSON array, no markdown, no backticks, no explanation:
+      const prompt = `You are a nutrition database. Give accurate nutritional values for: "${q}".
+Return ONLY a valid JSON array, no markdown, no backticks, no explanation, nothing else:
 [{"name":"magyar neve","cal":number,"protein":number,"carbs":number,"fat":number}]
-All values per 100g. Cal in kcal. Max 4 variants (pl. főtt/nyers). Be precise.`;
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+Rules: all values per 100g, cal in kcal, max 4 variants (e.g. cooked/raw, different types), be precise and realistic. Use standard USDA/Hungarian nutrition data.`;
+      const res = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6", max_tokens: 1000,
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
           messages: [{ role: "user", content: prompt }]
         })
       });
       const data = await res.json();
       const text = (data.content || []).filter(c => c.type === "text").map(c => c.text).join("");
-      const match = text.replace(/```json|```/g, "").match(/\[[\s\S]*?\]/);
+      const clean = text.replace(/```json|```/g, "").trim();
+      const match = clean.match(/\[[\s\S]*\]/);
       if (match) { setResults(JSON.parse(match[0])); setOpen(true); }
       else { setResults([]); setOpen(true); }
     } catch { setResults([]); setOpen(true); }
@@ -401,7 +401,7 @@ function PhotoTab({ date, setLog }) {
     try {
       const base64 = imgData.split(",")[1];
       const mediaType = imgData.split(";")[0].split(":")[1];
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/claude", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6", max_tokens: 1000,
@@ -462,17 +462,52 @@ function PhotoTab({ date, setLog }) {
 
 // ── HISTORY TAB ───────────────────────────────────────────────────────────
 function HistoryTab({ log, goals }) {
-  const days = Object.keys(log).sort((a, b) => b.localeCompare(a));
+  const days = Object.keys(log).sort((a, b) => a.localeCompare(b));
 
   const exportXLSX = () => {
     const wb = XLSX.utils.book_new();
+
+    // 1. munkalap: minden étel dátummal
+    const allRows = [];
     days.forEach(day => {
-      const entries = log[day] || [];
-      const rows = entries.map(e => ({ Étel: e.name, "Tömeg(g)": e.weight, "Kalória": e.cal, "Fehérje(g)": e.protein, "Szénhidrát(g)": e.carbs, "Zsír(g)": e.fat }));
-      const t = entries.reduce((a, e) => ({ cal: a.cal + e.cal, protein: a.protein + e.protein, carbs: a.carbs + e.carbs, fat: a.fat + e.fat }), { cal: 0, protein: 0, carbs: 0, fat: 0 });
-      rows.push({ Étel: "── ÖSSZESÍTŐ ──", "Tömeg(g)": "", "Kalória": Math.round(t.cal), "Fehérje(g)": Math.round(t.protein), "Szénhidrát(g)": Math.round(t.carbs), "Zsír(g)": Math.round(t.fat) });
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), day);
+      (log[day] || []).forEach(e => {
+        allRows.push({
+          "Dátum": day,
+          "Étel": e.name,
+          "Tömeg (g)": e.weight,
+          "Kalória (kcal)": Math.round(e.cal),
+          "Fehérje (g)": e.protein,
+          "Szénhidrát (g)": e.carbs,
+          "Zsír (g)": e.fat,
+        });
+      });
     });
+    const ws1 = XLSX.utils.json_to_sheet(allRows);
+    ws1["!cols"] = [{ wch: 12 }, { wch: 24 }, { wch: 10 }, { wch: 16 }, { wch: 13 }, { wch: 15 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, ws1, "Ételnapló");
+
+    // 2. munkalap: napi összesítő
+    const summaryRows = days.map(day => {
+      const entries = log[day] || [];
+      const t = entries.reduce((a, e) => ({ cal: a.cal + e.cal, protein: a.protein + e.protein, carbs: a.carbs + e.carbs, fat: a.fat + e.fat }), { cal: 0, protein: 0, carbs: 0, fat: 0 });
+      return {
+        "Dátum": day,
+        "Ételek száma": entries.length,
+        "Kalória (kcal)": Math.round(t.cal),
+        "Kcal cél": goals.cal,
+        "Kcal %": Math.round((t.cal / goals.cal) * 100) + "%",
+        "Fehérje (g)": Math.round(t.protein),
+        "Fehérje cél": goals.protein,
+        "Szénhidrát (g)": Math.round(t.carbs),
+        "Szénhidrát cél": goals.carbs,
+        "Zsír (g)": Math.round(t.fat),
+        "Zsír cél": goals.fat,
+      };
+    });
+    const ws2 = XLSX.utils.json_to_sheet(summaryRows);
+    ws2["!cols"] = [{ wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 13 }, { wch: 13 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, ws2, "Napi összesítő");
+
     XLSX.writeFile(wb, "makro_naplo.xlsx");
   };
 
