@@ -27,13 +27,13 @@ const DEFAULT_FOODS = [
 const todayStr = () => new Date().toISOString().split("T")[0];
 const uid = () => Math.random().toString(36).slice(2, 9);
 
-// ── STORAGE ────────────────────────────────────────────────────────────────
-async function storageGet(key) {
-  try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : null; }
+// ── STORAGE (localStorage) ─────────────────────────────────────────────────
+function storageGet(key) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
   catch { return null; }
 }
-async function storageSet(key, val) {
-  try { await window.storage.set(key, JSON.stringify(val)); } catch {}
+function storageSet(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
 }
 
 // ── SVG RING (responsive size) ────────────────────────────────────────────
@@ -147,7 +147,7 @@ function FoodSearch({ onSelect }) {
 Return ONLY a valid JSON array, no markdown, no backticks, no explanation, nothing else:
 [{"name":"magyar neve","cal":number,"protein":number,"carbs":number,"fat":number}]
 Rules: all values per 100g, cal in kcal, max 4 variants (e.g. cooked/raw, different types), be precise and realistic. Use standard USDA/Hungarian nutrition data.`;
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -439,7 +439,24 @@ function PhotoTab({ date, setLog }) {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => { setImgData(reader.result); setResult(null); setError(null); };
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1024;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          const ratio = Math.min(MAX / width, MAX / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL("image/jpeg", 0.7);
+        setImgData(compressed); setResult(null); setError(null);
+      };
+      img.src = ev.target.result;
+    };
     reader.readAsDataURL(file);
     e.target.value = "";
   };
@@ -450,7 +467,7 @@ function PhotoTab({ date, setLog }) {
     try {
       const base64 = imgData.split(",")[1];
       const mediaType = imgData.split(";")[0].split(":")[1];
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/claude", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6", max_tokens: 1000,
@@ -633,13 +650,13 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      const [l, g, f] = await Promise.all([storageGet("macro-log"), storageGet("macro-goals"), storageGet("macro-foods")]);
-      if (l) setLog(l);
-      if (g) setGoals(g);
-      if (f) setSavedFoods(f);
-      setLoaded(true);
-    })();
+    const l = storageGet("macro-log");
+    const g = storageGet("macro-goals");
+    const f = storageGet("macro-foods");
+    if (l) setLog(l);
+    if (g) setGoals(g);
+    if (f) setSavedFoods(f);
+    setLoaded(true);
   }, []);
 
   useEffect(() => { if (loaded) storageSet("macro-log", log); }, [log, loaded]);
