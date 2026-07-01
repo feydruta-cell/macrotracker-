@@ -27,23 +27,24 @@ const DEFAULT_FOODS = [
 const todayStr = () => new Date().toISOString().split("T")[0];
 const uid = () => Math.random().toString(36).slice(2, 9);
 
-// ── STORAGE (localStorage) ─────────────────────────────────────────────────
-function storageGet(key) {
-  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
+// ── STORAGE ────────────────────────────────────────────────────────────────
+async function storageGet(key) {
+  try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : null; }
   catch { return null; }
 }
-function storageSet(key, val) {
-  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+async function storageSet(key, val) {
+  try { await window.storage.set(key, JSON.stringify(val)); } catch {}
 }
 
 // ── SVG RING (responsive size) ────────────────────────────────────────────
-function Ring({ value, goal, label, color, size = 80 }) {
+function Ring({ value, goal, label, color, size = 80, showRemaining = false }) {
   const pct = Math.min(value / (goal || 1), 1);
   const r = (size - 12) / 2;
   const circ = 2 * Math.PI * r;
   const dash = pct * circ;
   const unit = label === "Kalória" ? "kcal" : "g";
   const cx = size / 2, cy = size / 2;
+  const remaining = Math.max(0, Math.round(goal - value));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 0 }}>
@@ -55,11 +56,11 @@ function Ring({ value, goal, label, color, size = 80 }) {
         <g style={{ transform: "rotate(90deg)", transformOrigin: `${cx}px ${cy}px` }}>
           <text x={cx} y={cy - 7} textAnchor="middle" dominantBaseline="middle"
             fill={TEXT} fontSize={size * 0.17} fontWeight={700} fontFamily="monospace">
-            {Math.round(value)}
+            {showRemaining ? remaining : Math.round(value)}
           </text>
           <text x={cx} y={cy + 8} textAnchor="middle" dominantBaseline="middle"
-            fill={MUTED} fontSize={size * 0.11}>
-            {unit}
+            fill={MUTED} fontSize={size * 0.1}>
+            {showRemaining ? "hátra" : unit}
           </text>
           <text x={cx} y={cy + 19} textAnchor="middle" dominantBaseline="middle"
             fill={color} fontSize={size * 0.12} fontWeight={600}>
@@ -146,11 +147,11 @@ function FoodSearch({ onSelect }) {
 Return ONLY a valid JSON array, no markdown, no backticks, no explanation, nothing else:
 [{"name":"magyar neve","cal":number,"protein":number,"carbs":number,"fat":number}]
 Rules: all values per 100g, cal in kcal, max 4 variants (e.g. cooked/raw, different types), be precise and realistic. Use standard USDA/Hungarian nutrition data.`;
-      const res = await fetch("/api/claude", {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6", max_tokens: 1000,
+          model: "claude-haiku-4-5", max_tokens: 1000,
           messages: [{ role: "user", content: prompt }]
         })
       });
@@ -225,16 +226,25 @@ function TodayTab({ date, setDate, log, setLog, goals, setSavedFoods }) {
   const [form, setForm] = useState({ name: "", cal: "", protein: "", carbs: "", fat: "", weight: "100" });
   const [saveQuick, setSaveQuick] = useState(false);
   const [base100, setBase100] = useState(null);
+  const [showRemaining, setShowRemaining] = useState(true);
 
   const dayLog = log[date] || [];
   const totals = dayLog.reduce((a, e) => ({ cal: a.cal + e.cal, protein: a.protein + e.protein, carbs: a.carbs + e.carbs, fat: a.fat + e.fat }), { cal: 0, protein: 0, carbs: 0, fat: 0 });
 
-  const handleWeightChange = (val) => {
-    if (base100 && val > 0) {
-      const r = val / 100;
-      setForm(p => ({ ...p, weight: val, cal: +(base100.cal * r).toFixed(1), protein: +(base100.protein * r).toFixed(1), carbs: +(base100.carbs * r).toFixed(1), fat: +(base100.fat * r).toFixed(1) }));
-    } else { setForm(p => ({ ...p, weight: val })); }
+  const setWeight = (val) => {
+    const num = Math.max(1, val);
+    if (base100) {
+      const r = num / 100;
+      setForm(p => ({ ...p, weight: String(num), cal: +(base100.cal * r).toFixed(1), protein: +(base100.protein * r).toFixed(1), carbs: +(base100.carbs * r).toFixed(1), fat: +(base100.fat * r).toFixed(1) }));
+    } else { setForm(p => ({ ...p, weight: String(num) })); }
   };
+
+  const handleWeightChange = (val) => {
+    if (val === "") { setForm(p => ({ ...p, weight: "" })); return; }
+    setWeight(+val);
+  };
+
+  const bumpWeight = (delta) => setWeight((+form.weight || 0) + delta);
 
   const handleSearchSelect = (food) => {
     setBase100({ cal: food.cal, protein: food.protein, carbs: food.carbs, fat: food.fat });
@@ -260,16 +270,18 @@ function TodayTab({ date, setDate, log, setLog, goals, setSavedFoods }) {
         onFocus={e => e.target.style.borderColor = LIME} onBlur={e => e.target.style.borderColor = BORDER}
       />
 
-      {/* Rings — 2x2 grid on mobile */}
+      {/* Rings — 2x2 grid on mobile. Tap calorie ring to toggle remaining/consumed */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         {[
-          { label: "Kalória", value: totals.cal, goal: goals.cal, color: LIME },
+          { label: "Kalória", value: totals.cal, goal: goals.cal, color: LIME, tappable: true },
           { label: "Fehérje", value: totals.protein, goal: goals.protein, color: BLUE },
           { label: "Szénhidrát", value: totals.carbs, goal: goals.carbs, color: ORANGE },
           { label: "Zsír", value: totals.fat, goal: goals.fat, color: PINK },
         ].map(r => (
-          <div key={r.label} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "14px 8px", display: "flex", justifyContent: "center" }}>
-            <Ring {...r} size={90} />
+          <div key={r.label}
+            onClick={r.tappable ? () => setShowRemaining(s => !s) : undefined}
+            style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "14px 8px", display: "flex", justifyContent: "center", cursor: r.tappable ? "pointer" : "default" }}>
+            <Ring {...r} size={90} showRemaining={r.tappable && showRemaining} />
           </div>
         ))}
       </div>
@@ -288,7 +300,20 @@ function TodayTab({ date, setDate, log, setLog, goals, setSavedFoods }) {
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <Input label="Étel neve" value={form.name} placeholder="pl. Csirkemell" onChange={e => setForm(p => ({ ...p, name: e.target.value }))} style={{ gridColumn: "1/-1" }} />
-          <Input label="Tömeg (g)" type="number" value={form.weight} min="1" onChange={e => handleWeightChange(+e.target.value)} />
+
+          <div style={{ gridColumn: "1/-1", display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 10, color: MUTED, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>Tömeg (g)</label>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input type="number" inputMode="numeric" value={form.weight} min="1"
+                onChange={e => handleWeightChange(e.target.value)}
+                style={{ flex: 1, minWidth: 0, background: CARD2, border: `1px solid ${BORDER}`, borderRadius: 8, color: TEXT, padding: "9px 11px", fontSize: 14, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                onFocus={e => e.target.style.borderColor = LIME} onBlur={e => e.target.style.borderColor = BORDER}
+              />
+              <Btn small variant="muted" onClick={() => bumpWeight(10)}>+10g</Btn>
+              <Btn small variant="muted" onClick={() => bumpWeight(100)}>+100g</Btn>
+            </div>
+          </div>
+
           <Input label="Kalória" type="number" value={form.cal} min="0" onChange={e => { setBase100(null); setForm(p => ({ ...p, cal: e.target.value })); }} />
           <Input label="Fehérje (g)" type="number" value={form.protein} min="0" step="0.1" onChange={e => { setBase100(null); setForm(p => ({ ...p, protein: e.target.value })); }} />
           <Input label="Szénhidrát (g)" type="number" value={form.carbs} min="0" step="0.1" onChange={e => { setBase100(null); setForm(p => ({ ...p, carbs: e.target.value })); }} />
@@ -332,13 +357,26 @@ function TodayTab({ date, setDate, log, setLog, goals, setSavedFoods }) {
 // ── QUICK TAB ─────────────────────────────────────────────────────────────
 function QuickTab({ savedFoods, setSavedFoods, date, setLog }) {
   const [weights, setWeights] = useState({});
+  const [added, setAdded] = useState({});
 
-  const getW = (food) => weights[food.id] ?? food.weight;
-  const scale = (food, field) => Math.round((food[field] / food.weight) * getW(food) * 10) / 10;
+  const getW = (food) => weights[food.id] !== undefined ? weights[food.id] : food.weight;
+  const scale = (food, field) => Math.round((food[field] / food.weight) * (getW(food) || 1) * 10) / 10;
+
+  const bump = (food, delta) => {
+    setWeights(p => ({ ...p, [food.id]: Math.max(1, (p[food.id] !== undefined ? p[food.id] : food.weight) + delta) }));
+  };
+
+  const setW = (food, val) => {
+    if (val === "") { setWeights(p => ({ ...p, [food.id]: "" })); return; }
+    const num = parseInt(val, 10);
+    if (!isNaN(num)) setWeights(p => ({ ...p, [food.id]: Math.max(1, num) }));
+  };
 
   const addToDay = (food) => {
-    const w = getW(food);
+    const w = getW(food) || food.weight;
     setLog(p => ({ ...p, [date]: [...(p[date] || []), { id: uid(), name: food.name, cal: scale(food, "cal"), protein: scale(food, "protein"), carbs: scale(food, "carbs"), fat: scale(food, "fat"), weight: w }] }));
+    setAdded(p => ({ ...p, [food.id]: true }));
+    setTimeout(() => setAdded(p => ({ ...p, [food.id]: false })), 1800);
   };
 
   if (savedFoods.length === 0) return <p style={{ color: MUTED, fontSize: 13 }}>Még nincs mentett étel. A Ma fülön pipáld be a "Mentés gyors ételként" opciót.</p>;
@@ -347,21 +385,24 @@ function QuickTab({ savedFoods, setSavedFoods, date, setLog }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {savedFoods.map(food => {
         const w = getW(food);
+        const justAdded = !!added[food.id];
         return (
-          <div key={food.id} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 14 }}>
+          <div key={food.id} style={{ background: CARD, border: `1px solid ${justAdded ? LIME : BORDER}`, borderRadius: 12, padding: 14, transition: "border-color 0.3s" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <span style={{ fontWeight: 700, fontSize: 14, color: TEXT }}>{food.name}</span>
               <button onClick={() => setSavedFoods(p => p.filter(f => f.id !== food.id))} style={{ background: "none", border: "none", color: MUTED, cursor: "pointer", fontSize: 15 }}>🗑</button>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-              <Btn small variant="muted" onClick={() => setWeights(p => ({ ...p, [food.id]: Math.max(1, (weights[food.id] ?? food.weight) - 10) }))}>−</Btn>
-              <input type="number" min="1" value={w}
-                onChange={e => setWeights(p => ({ ...p, [food.id]: +e.target.value || 1 }))}
-                style={{ width: 64, background: CARD2, border: `1px solid ${BORDER}`, borderRadius: 8, color: TEXT, padding: "6px 8px", fontSize: 14, textAlign: "center", fontFamily: "monospace", outline: "none", boxSizing: "border-box" }}
-                onFocus={e => e.target.style.borderColor = LIME} onBlur={e => e.target.style.borderColor = BORDER}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+              <Btn small variant="muted" onClick={() => bump(food, -10)}>−10</Btn>
+              <input type="number" inputMode="numeric" min="1" value={w}
+                onChange={e => setW(food, e.target.value)}
+                onBlur={e => { if (e.target.value === "") setWeights(p => ({ ...p, [food.id]: food.weight })); }}
+                style={{ width: 60, background: CARD2, border: "1px solid " + BORDER, borderRadius: 8, color: TEXT, padding: "6px 8px", fontSize: 14, textAlign: "center", fontFamily: "monospace", outline: "none", boxSizing: "border-box" }}
+                onFocus={e => e.target.style.borderColor = LIME}
               />
-              <span style={{ color: MUTED, fontSize: 13 }}>g</span>
-              <Btn small variant="muted" onClick={() => setWeights(p => ({ ...p, [food.id]: (weights[food.id] ?? food.weight) + 10 }))}>+</Btn>
+              <span style={{ color: MUTED, fontSize: 12 }}>g</span>
+              <Btn small variant="muted" onClick={() => bump(food, 10)}>+10</Btn>
+              <Btn small variant="muted" onClick={() => bump(food, 100)}>+100</Btn>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 12 }}>
               {[[scale(food, "cal"), "kcal", LIME], [scale(food, "protein"), "P", BLUE], [scale(food, "carbs"), "C", ORANGE], [scale(food, "fat"), "F", PINK]].map(([v, l, c]) => (
@@ -371,7 +412,14 @@ function QuickTab({ savedFoods, setSavedFoods, date, setLog }) {
                 </div>
               ))}
             </div>
-            <Btn onClick={() => addToDay(food)} full small>+ Hozzáadás a mai naphoz</Btn>
+            <button onClick={() => !justAdded && addToDay(food)} style={{
+              width: "100%", padding: "9px 0", borderRadius: 8, fontSize: 13, fontWeight: 700,
+              cursor: justAdded ? "default" : "pointer", border: "none", fontFamily: "inherit",
+              background: justAdded ? "#1a3a00" : LIME, color: justAdded ? LIME : "#000",
+              transition: "all 0.3s", letterSpacing: "0.04em",
+            }}>
+              {justAdded ? "✓ Hozzáadva!" : "+ Hozzáadás a mai naphoz"}
+            </button>
           </div>
         );
       })}
@@ -393,6 +441,7 @@ function PhotoTab({ date, setLog }) {
     const reader = new FileReader();
     reader.onload = () => { setImgData(reader.result); setResult(null); setError(null); };
     reader.readAsDataURL(file);
+    e.target.value = "";
   };
 
   const analyze = async () => {
@@ -401,13 +450,13 @@ function PhotoTab({ date, setLog }) {
     try {
       const base64 = imgData.split(",")[1];
       const mediaType = imgData.split(";")[0].split(":")[1];
-      const res = await fetch("/api/claude", {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6", max_tokens: 1000,
           messages: [{ role: "user", content: [
             { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: `Analyze this food image. Return ONLY valid JSON, no markdown:\n{"name":"magyar neve","cal":number,"protein":number,"carbs":number,"fat":number}\nAll macros in grams for the full visible portion. Cal in kcal.${extra ? ` Extra info: ${extra}` : ""}` }
+            { type: "text", text: "Analyze this food image. Return ONLY valid JSON, no markdown:\n{\"name\":\"magyar neve\",\"cal\":number,\"protein\":number,\"carbs\":number,\"fat\":number}\nAll macros in grams for the full visible portion. Cal in kcal." + (extra ? " Extra info: " + extra : "") }
           ]}]
         })
       });
@@ -429,21 +478,36 @@ function PhotoTab({ date, setLog }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <input type="file" id="food-img" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
-      <label htmlFor="food-img" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 160, background: CARD, border: `2px dashed ${imgData ? LIME : BORDER}`, borderRadius: 14, cursor: "pointer", overflow: "hidden" }}>
-        {imgData
-          ? <img src={imgData} alt="preview" style={{ maxWidth: "100%", maxHeight: 280, objectFit: "contain" }} />
-          : <>
-            <span style={{ fontSize: 36, marginBottom: 10 }}>📷</span>
-            <span style={{ color: LIME, fontWeight: 700, fontSize: 14 }}>Kép kiválasztása</span>
-            <span style={{ color: MUTED, fontSize: 12, marginTop: 4 }}>Kattints a feltöltéshez</span>
-          </>}
-      </label>
+      {/* Hidden inputs: gallery + camera */}
+      <input type="file" id="food-img-gallery" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
+      <input type="file" id="food-img-camera" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleFile} />
+
+      {/* Image preview or placeholder */}
+      {imgData
+        ? <div style={{ position: "relative", borderRadius: 14, overflow: "hidden", border: "2px solid " + LIME }}>
+            <img src={imgData} alt="preview" style={{ width: "100%", maxHeight: 300, objectFit: "contain", display: "block", background: CARD2 }} />
+            <button onClick={() => { setImgData(null); setResult(null); setError(null); }}
+              style={{ position: "absolute", top: 10, right: 10, background: "rgba(0,0,0,0.7)", border: "none", color: TEXT, borderRadius: 20, width: 30, height: 30, cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+          </div>
+        : <div style={{ display: "flex", gap: 10 }}>
+            <label htmlFor="food-img-gallery" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 120, background: CARD, border: "2px dashed " + BORDER, borderRadius: 14, cursor: "pointer", gap: 8 }}>
+              <span style={{ fontSize: 28 }}>🖼️</span>
+              <span style={{ color: LIME, fontWeight: 700, fontSize: 13 }}>Galéria</span>
+            </label>
+            <label htmlFor="food-img-camera" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 120, background: CARD, border: "2px dashed " + BORDER, borderRadius: 14, cursor: "pointer", gap: 8 }}>
+              <span style={{ fontSize: 28 }}>📷</span>
+              <span style={{ color: LIME, fontWeight: 700, fontSize: 13 }}>Kamera</span>
+            </label>
+          </div>
+      }
+
       <Input label="Extra info (opcionális)" value={extra} onChange={e => setExtra(e.target.value)} placeholder="pl. 200g adag, sózott..." />
       <Btn onClick={analyze} full disabled={!imgData || loading}>{loading ? "⟳ Elemzés..." : "🔍 Elemzés Claude-dal"}</Btn>
-      {error && <div style={{ color: RED, fontSize: 13, padding: "10px 14px", background: "#1a0000", borderRadius: 8, border: `1px solid ${RED}` }}>{error}</div>}
+
+      {error && <div style={{ color: RED, fontSize: 13, padding: "10px 14px", background: "#1a0000", borderRadius: 8, border: "1px solid " + RED }}>{error}</div>}
+
       {result && (
-        <div style={{ background: CARD, border: `1px solid ${LIME}`, borderRadius: 12, padding: 16 }}>
+        <div style={{ background: CARD, border: "1px solid " + LIME, borderRadius: 12, padding: 16 }}>
           <div style={{ fontWeight: 700, color: LIME, fontSize: 15, marginBottom: 12 }}>{result.name}</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 14 }}>
             {[[result.cal, "kcal", LIME], [result.protein, "P(g)", BLUE], [result.carbs, "C(g)", ORANGE], [result.fat, "F(g)", PINK]].map(([v, l, c]) => (
@@ -569,13 +633,13 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    const l = storageGet("macro-log");
-    const g = storageGet("macro-goals");
-    const f = storageGet("macro-foods");
-    if (l) setLog(l);
-    if (g) setGoals(g);
-    if (f) setSavedFoods(f);
-    setLoaded(true);
+    (async () => {
+      const [l, g, f] = await Promise.all([storageGet("macro-log"), storageGet("macro-goals"), storageGet("macro-foods")]);
+      if (l) setLog(l);
+      if (g) setGoals(g);
+      if (f) setSavedFoods(f);
+      setLoaded(true);
+    })();
   }, []);
 
   useEffect(() => { if (loaded) storageSet("macro-log", log); }, [log, loaded]);
