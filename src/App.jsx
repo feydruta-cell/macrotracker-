@@ -143,25 +143,18 @@ function FoodSearch({ onSelect }) {
     setSearching(true);
     setSearched(false);
     try {
-      const prompt = `You are a nutrition database. Give accurate nutritional values for: "${q}".
-Return ONLY a valid JSON array, no markdown, no backticks, no explanation, nothing else:
-[{"name":"magyar neve","cal":number,"protein":number,"carbs":number,"fat":number}]
-Rules: all values per 100g, cal in kcal, max 4 variants (e.g. cooked/raw, different types), be precise and realistic. Use standard USDA/Hungarian nutrition data.`;
-      const res = await fetch("/api/claude", {
+      const res = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5", max_tokens: 1000,
-          messages: [{ role: "user", content: prompt }]
-        })
+        body: JSON.stringify({ query: q })
       });
       const data = await res.json();
-      const text = (data.content || []).filter(c => c.type === "text").map(c => c.text).join("");
-      const clean = text.replace(/```json|```/g, "").trim();
-      const match = clean.match(/\[[\s\S]*\]/);
-      if (match) { setResults(JSON.parse(match[0])); setOpen(true); }
-      else { setResults([]); setOpen(true); }
-    } catch { setResults([]); setOpen(true); }
+      setResults(data.results || []);
+      setOpen(true);
+    } catch (err) {
+      console.error(err);
+      setResults([]); setOpen(true);
+    }
     setSearching(false);
     setSearched(true);
   };
@@ -439,24 +432,7 @@ function PhotoTab({ date, setLog }) {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = () => {
-        const MAX = 1024;
-        let { width, height } = img;
-        if (width > MAX || height > MAX) {
-          const ratio = Math.min(MAX / width, MAX / height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = width; canvas.height = height;
-        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-        const compressed = canvas.toDataURL("image/jpeg", 0.7);
-        setImgData(compressed); setResult(null); setError(null);
-      };
-      img.src = ev.target.result;
-    };
+    reader.onload = () => { setImgData(reader.result); setResult(null); setError(null); };
     reader.readAsDataURL(file);
     e.target.value = "";
   };
