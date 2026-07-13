@@ -432,7 +432,29 @@ function PhotoTab({ date, setLog }) {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => { setImgData(reader.result); setResult(null); setError(null); };
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 768;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          const ratio = Math.min(MAX / width, MAX / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        let quality = 0.6;
+        let dataUrl = canvas.toDataURL("image/jpeg", quality);
+        while (dataUrl.length * 0.75 > 3 * 1024 * 1024 && quality > 0.2) {
+          quality -= 0.1;
+          dataUrl = canvas.toDataURL("image/jpeg", quality);
+        }
+        setImgData(dataUrl); setResult(null); setError(null);
+      };
+      img.src = ev.target.result;
+    };
     reader.readAsDataURL(file);
     e.target.value = "";
   };
